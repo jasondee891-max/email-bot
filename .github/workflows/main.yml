@@ -22,24 +22,55 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; else echo "No requirements.txt found"; fi
 
-      - name: Create .env from secret
+      - name: Create .env from secret (only if secret present)
+        if: ${{ secrets.BREVO_API_KEY != '' }}
         env:
           BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
         run: |
-          if [ -z "$BREVO_API_KEY" ]; then
-            echo "Missing BREVO_API_KEY secret. Set it in repository settings -> Secrets."
-            exit 1
-          fi
           echo "BREVO_API_KEY=$BREVO_API_KEY" > .env
           chmod 600 .env
           echo ".env created"
 
-      - name: Run email bot
+      - name: Warn if BREVO_API_KEY missing
+        if: ${{ secrets.BREVO_API_KEY == '' }}
         run: |
-          python send_emails.py
+          echo "::warning::BREVO_API_KEY is not set. The bot may fail if it requires the API key."
+
+      - name: Debug runner state
+        run: |
+          echo "Working directory: $(pwd)"
+          echo "Files in workspace (root):"
+          ls -la
+          echo "Files in possible subfolder './email-bot':"
+          ls -la ./email-bot || true
+          echo "Python version:"
+          python --version || true
+
+      - name: Run email bot (try root then ./email-bot)
+        run: |
+          # Prefer root, fall back to ./email-bot if present
+          if [ -f send_emails.py ]; then
+            echo "Found send_emails.py in repository root, running it..."
+            python send_emails.py || { echo "::error::send_emails.py exited with non-zero status"; exit 1; }
+          elif [ -f ./email-bot/send_emails.py ]; then
+            echo "Found send_emails.py in ./email-bot/, running it..."
+            python ./email-bot/send_emails.py || { echo "::error::send_emails.py exited with non-zero status"; exit 1; }
+          else
+            echo "::error::send_emails.py not found in root or ./email-bot/; update workflow or repo layout"
+            exit 1
+          fi
+
+      - id: check_log
+        name: Check for log file
+        run: |
+          if [ -f email_bot.log ]; then
+            echo "artifact_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "artifact_exists=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Upload log artifact
-        if: always()
+        if: ${{ steps.check_log.outputs.artifact_exists == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: email-bot-log
